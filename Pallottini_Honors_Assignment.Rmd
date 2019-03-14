@@ -1,0 +1,86 @@
+---
+title: "Honors Assignment"
+author: "Ashton Pallottini"
+date: "November 18, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, warning=FALSE, message=FALSE}
+library(rgdal)
+library(leaflet)
+library(sp)
+library(dplyr)
+```
+
+```{r}
+#Unzip files
+unzip("CO-wells.zip", exdir = ".")
+list.files("CO-wells")
+
+#Read in data and convert to SpatialPointsDataFrame
+CO.Wells <- read.csv(file ="CO-wells/CO-wells.csv", header = T, na.strings = "NA")
+wells <- SpatialPointsDataFrame(coords = CO.Wells[,2:1], data = CO.Wells, proj4string = CRS("+proj=longlat +datum=WGS84"))
+
+#Read in polygons and change change proj4string
+huc1 <- readOGR("CO-wells", "CO-HUC")
+huc <- spTransform(huc1, CRS("+proj=longlat +datum=WGS84"))
+
+#Records HUC ID for each point in wells
+wells@data$HUC_ID <- over(wells, huc)$HUC_ID
+
+#Groups by HUC ID and records total wells, active, and inactive
+huc.wells <- wells@data %>% group_by(HUC_ID) %>% summarize(total = length(Facil_Stat), active = sum(Facil_Stat == "AC" | Facil_Stat == "PR"), inactive = total  - active)
+huc.wells
+```
+
+```{r}
+#Joins huc.wells and the data of huc by HUC_ID
+huc@data <- left_join(huc@data, huc.wells, by = "HUC_ID")
+dim(huc@data)
+head(huc@data)
+```
+
+```{r}
+#Replace NA values with 0
+huc@data[is.na(huc@data)] <- 0
+huc@data
+```
+
+```{r}
+pal <- colorBin("YlOrRd", domain = huc$total, bins = 6, pretty = TRUE)
+#Create custom labels
+labels <- sprintf(
+  "<strong>%s</strong><br/>%s<br/>%s<br/>%s",
+  paste("HUC:",huc@data$HUC_NAME), paste("Total:",huc@data$total), paste("Active:",huc@data$active), paste("Inactive:",huc@data$inactive)
+) %>% lapply(htmltools::HTML)
+
+leaflet(width = "100%") %>% 
+# Overlay groups
+addPolygons(data = huc, fillColor = ~pal(total), group = "Oil & gas wells", fillOpacity = .4, color = "white", opacity = 1, weight = 2, dashArray = "3", highlight = highlightOptions(
+  weight = 5,
+  color = "#666",
+  dashArray = "",
+  fillOpacity = 0.4,
+  bringToFront = TRUE),
+label = labels,
+labelOptions = labelOptions(
+  style = list("font-weight" = "normal", padding = "3px 8px"),
+  textsize = "15px",
+  direction = "auto",
+  noHide = TRUE))%>% 
+    
+# Base groups
+addProviderTiles(providers$OpenStreetMap.Mapnik, group = "OSM (default)") %>% 
+    addProviderTiles(providers$Esri.WorldImagery, group = "Imagery") %>% addProviderTiles(providers$Esri.WorldTopoMap, 
+    group = "Topo") %>% 
+# Layers control
+addLayersControl(overlayGroups = c("Oil & gas wells"), baseGroups = c("OSM (default)", 
+    "Imagery", "Topo"), options = layersControlOptions(collapsed = FALSE)) %>%
+#Add Legend
+addLegend("bottomright", pal = pal, values = huc$total, title = "Total number of gas and oil<br>wells by USGS HUC")
+```
+
